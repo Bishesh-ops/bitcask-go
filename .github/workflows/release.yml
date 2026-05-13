@@ -1,0 +1,69 @@
+name: Statically Linked Release
+
+on:
+  push:
+    tags:
+      - 'v*' # Trigger workflow strictly on version tags (e.g., v1.0.0)
+
+permissions:
+  contents: write # Required to allow GitHub Actions to generate Release assets
+
+jobs:
+  compile-matrix:
+    name: Cross-Compile Systems Binaries
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # Define target OS and Hardware architecture combinations
+        goos: [linux, darwin]
+        goarch: [amd64, arm64]
+
+    steps:
+      - name: Checkout Codebase
+        uses: actions/checkout@v4
+
+      - name: Setup Go Environment
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+
+      - name: Build Statically Linked Executables
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          # Disabling CGO forces pure static compilation with zero dynamic library dependencies
+          CGO_ENABLED: 0 
+        run: |
+          mkdir -p dist
+          
+          SERVER_NAME=bitcask-server-${{ matrix.goos }}-${{ matrix.goarch }}
+          CLIENT_NAME=bitcask-client-${{ matrix.goos }}-${{ matrix.goarch }}
+          
+          # Compile with linker flags (-s -w) to strip symbol tables and debug info for smaller bin sizes
+          go build -ldflags="-s -w" -o dist/$SERVER_NAME ./cmd/server/main.go
+          go build -ldflags="-s -w" -o dist/$CLIENT_NAME ./cmd/client/main.go
+
+      - name: Archive Production Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: compiled-binaries-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+          retention-days: 1
+
+  publish-release:
+    name: Generate Automated GitHub Release
+    needs: compile-matrix
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Matrix Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+          pattern: compiled-binaries-*
+          merge-multiple: true
+
+      - name: Create Release & Upload Executables
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ./artifacts/*
+          generate_release_notes: true

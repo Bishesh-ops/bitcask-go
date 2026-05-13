@@ -1,0 +1,42 @@
+name: CI Pipeline
+
+on:
+  push:
+    branches: [ "master", "main" ]
+  pull_request:
+    branches: [ "master", "main" ]
+
+jobs:
+  build-and-verify:
+    name: Systems Verification & Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Codebase
+        uses: actions/checkout@v4
+
+      - name: Setup Go Environment
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+          cache: true
+
+      - name: Verify Formatting
+        run: |
+          if [ -n "$(gofmt -l .)" ]; then
+            echo "Code is not formatted correctly. Run 'go fmt ./...' locally."
+            exit 1
+          fi
+
+      - name: Run Static Systems Analysis (go vet)
+        run: go vet ./...
+
+      - name: Build Target Executables
+        run: |
+          # Verify both client and server entrypoints compile flawlessly
+          go build -v -o ./bin/bitcask-server ./cmd/server/main.go
+          go build -v -o ./bin/bitcask-client ./cmd/client/main.go
+
+      - name: Execute Concurrency Race Detection
+        # The -race flag instruments compilation to detect thread-unsafe memory accesses dynamically
+        run: go test -v -race ./...
