@@ -1,4 +1,3 @@
-// internal/raft/transport.go
 package raft
 
 import (

@@ -2,6 +2,7 @@ package raft
 
 import (
 	"github.com/bisheshops/bitcask-go/internal/engine"
+	"github.com/bisheshops/bitcask-go/internal/wire"
 	"math/rand"
 	"sync"
 	"time"
@@ -31,8 +32,8 @@ type Node struct {
 	lastApplied int
 
 	// Underlying storage engine
-	db *engine.DB
-
+	db        *engine.DB
+	transport *Transport
 	// Timers and triggers
 	heartbeatTimer *time.Timer
 	electionTimer  *time.Timer
@@ -46,6 +47,7 @@ func NewNode(id int, peers []string, db *engine.DB) *Node {
 		votedFor:    -1,
 		currentTerm: 0,
 		db:          db,
+		transport:   NewTransport(),
 	}
 	n.resetElectionTimeout()
 
@@ -55,8 +57,8 @@ func NewNode(id int, peers []string, db *engine.DB) *Node {
 func (n *Node) resetElectionTimeout() {
 	if n.electionTimer != nil {
 		n.electionTimer.Stop()
-	}
 
+	}
 	d := time.Duration(150+rand.Intn(150)) * time.Millisecond
 	n.electionTimer = time.AfterFunc(d, func() {
 		n.startElection()
@@ -69,6 +71,7 @@ func (n *Node) startElection() {
 	n.currentTerm++
 	n.votedFor = n.id // Vote for self
 	term := n.currentTerm
+	// Request votes from all peers concurrently using Goroutines
 	n.resetElectionTimeout() // Reset timer in case this election results in a tie
 	n.mu.Unlock()
 
@@ -76,7 +79,6 @@ func (n *Node) startElection() {
 	votesReceived := 1
 	var voteMu sync.Mutex
 
-	// Request votes from all peers concurrently using Goroutines
 	for _, peerAddr := range n.peers {
 		go func(peer string) {
 			args := RequestVoteArgs{
@@ -86,8 +88,10 @@ func (n *Node) startElection() {
 				LastLogTerm:  0, // Simplified for step 1
 			}
 
-			// In production, you'd send this over your custom TCP wire client
 			reply := n.sendRequestVoteRPC(peer, args)
+			if reply == nil {
+				return // Network Drop
+			}
 
 			n.mu.Lock()
 			defer n.mu.Unlock()
@@ -122,14 +126,24 @@ func (n *Node) startHeartbeats() {
 	}
 
 	// Instantly broadcast empty AppendEntries packets to assert dominance
-	for _, peerAddr := range n.peers {
+	/*for _, peerAddr := range n.peers {
 		go func(peer string) {
 			// Send periodic heartbeats every 50ms
 		}(peerAddr)
-	}
+	}*/
 }
 
-func (n *Node) sendRequestVoteRPC(peer string, args RequestVoteArgs) RequestVoteReply {
-	// For now, return a dummy ungranted vote so the compiler compiles cleanly
-	return nil
+func (n *Node) sendRequestVoteRPC(peer string, args RequestVoteArgs) *RequestVoteReply {
+	client := n.transport.GetPeer(peer)
+	payload := args.Encode()
+
+	respFrame, err := client.ExecRPC(wire.CmdRaftRequestVote, payload)
+	if err != nil {
+		return nil
+	}
+	if respFrame.Cmd != wire.CmdRaftRequestVoteReply {
+		return nil
+	}
+	reply := DecodeRequestVoteReply(respFrame.Value)
+	return &reply
 }
