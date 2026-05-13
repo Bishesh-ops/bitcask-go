@@ -1,11 +1,12 @@
 package raft
 
 import (
-	"github.com/bisheshops/bitcask-go/internal/engine"
-	"github.com/bisheshops/bitcask-go/internal/wire"
 	"math/rand"
 	"sync"
 	"time"
+
+	"github.com/bisheshops/bitcask-go/internal/engine"
+	"github.com/bisheshops/bitcask-go/internal/wire"
 )
 
 type State int
@@ -19,7 +20,7 @@ const (
 type Node struct {
 	mu    sync.Mutex
 	id    int
-	peers []string //TCP addresses of the other cluster nodes
+	peers []string // TCP addresses of the other cluster nodes
 	state State
 
 	// Persistent state on all servers
@@ -34,6 +35,7 @@ type Node struct {
 	// Underlying storage engine
 	db        *engine.DB
 	transport *Transport
+
 	// Timers and triggers
 	heartbeatTimer *time.Timer
 	electionTimer  *time.Timer
@@ -50,14 +52,12 @@ func NewNode(id int, peers []string, db *engine.DB) *Node {
 		transport:   NewTransport(),
 	}
 	n.resetElectionTimeout()
-
 	return n
 }
 
 func (n *Node) resetElectionTimeout() {
 	if n.electionTimer != nil {
 		n.electionTimer.Stop()
-
 	}
 	d := time.Duration(150+rand.Intn(150)) * time.Millisecond
 	n.electionTimer = time.AfterFunc(d, func() {
@@ -71,7 +71,6 @@ func (n *Node) startElection() {
 	n.currentTerm++
 	n.votedFor = n.id // Vote for self
 	term := n.currentTerm
-	// Request votes from all peers concurrently using Goroutines
 	n.resetElectionTimeout() // Reset timer in case this election results in a tie
 	n.mu.Unlock()
 
@@ -79,6 +78,7 @@ func (n *Node) startElection() {
 	votesReceived := 1
 	var voteMu sync.Mutex
 
+	// Request votes from all peers concurrently using Goroutines
 	for _, peerAddr := range n.peers {
 		go func(peer string) {
 			args := RequestVoteArgs{
@@ -96,7 +96,7 @@ func (n *Node) startElection() {
 			n.mu.Lock()
 			defer n.mu.Unlock()
 
-			// If the cluster term moved on while we were waiting over the network, step down
+			// If the cluster term moved on while waiting over the network, step down
 			if n.state != Candidate || n.currentTerm != term {
 				return
 			}
@@ -120,17 +120,12 @@ func (n *Node) startElection() {
 		}(peerAddr)
 	}
 }
+
 func (n *Node) startHeartbeats() {
 	if n.electionTimer != nil {
 		n.electionTimer.Stop()
 	}
-
-	// Instantly broadcast empty AppendEntries packets to assert dominance
-	/*for _, peerAddr := range n.peers {
-		go func(peer string) {
-			// Send periodic heartbeats every 50ms
-		}(peerAddr)
-	}*/
+	// Broadcast logic stubbed
 }
 
 func (n *Node) sendRequestVoteRPC(peer string, args RequestVoteArgs) *RequestVoteReply {
@@ -146,4 +141,33 @@ func (n *Node) sendRequestVoteRPC(peer string, args RequestVoteArgs) *RequestVot
 	}
 	reply := DecodeRequestVoteReply(respFrame.Value)
 	return &reply
+}
+
+// HandleRequestVote processes incoming consensus network frames targeted at this node.
+func (n *Node) HandleRequestVote(args RequestVoteArgs) RequestVoteReply {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	reply := RequestVoteReply{
+		Term:        n.currentTerm,
+		VoteGranted: false,
+	}
+
+	if args.Term < n.currentTerm {
+		return reply
+	}
+
+	if args.Term > n.currentTerm {
+		n.currentTerm = args.Term
+		n.state = Follower
+		n.votedFor = -1
+	}
+
+	if n.votedFor == -1 || n.votedFor == args.CandidateID {
+		n.votedFor = args.CandidateID
+		reply.VoteGranted = true
+		n.resetElectionTimeout() // Granting vote restarts idle timeout bounds
+	}
+
+	return reply
 }

@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 )
 
-// Request sent by candidates to request for votes.
+// RequestVoteArgs is sent by candidates to request votes.
 type RequestVoteArgs struct {
 	Term         int
 	CandidateID  int
@@ -12,34 +12,34 @@ type RequestVoteArgs struct {
 	LastLogTerm  int
 }
 
-// Encode packs fixed integer fields into a contiguous byte slice
+// Encode packs integer fields into a contiguous 32-byte Little Endian buffer.
 func (args *RequestVoteArgs) Encode() []byte {
 	buf := make([]byte, 32)
-	binary.BigEndian.PutUint64(buf[0:8], uint64(args.Term))
-	binary.BigEndian.PutUint64(buf[8:16], uint64(args.CandidateID))
-	binary.BigEndian.PutUint64(buf[16:24], uint64(args.LastLogIndex))
-	binary.BigEndian.PutUint64(buf[24:32], uint64(args.LastLogTerm))
+	binary.LittleEndian.PutUint64(buf[0:8], uint64(args.Term))
+	binary.LittleEndian.PutUint64(buf[8:16], uint64(args.CandidateID))
+	binary.LittleEndian.PutUint64(buf[16:24], uint64(args.LastLogIndex))
+	binary.LittleEndian.PutUint64(buf[24:32], uint64(args.LastLogTerm))
 	return buf
 }
 
 func DecodeRequestVoteArgs(buf []byte) RequestVoteArgs {
 	return RequestVoteArgs{
-		Term:         int(binary.BigEndian.Uint64(buf[0:8])),
-		CandidateID:  int(binary.BigEndian.Uint64(buf[8:16])),
-		LastLogIndex: int(binary.BigEndian.Uint64(buf[16:24])),
-		LastLogTerm:  int(binary.BigEndian.Uint64(buf[24:32])),
+		Term:         int(binary.LittleEndian.Uint64(buf[0:8])),
+		CandidateID:  int(binary.LittleEndian.Uint64(buf[8:16])),
+		LastLogIndex: int(binary.LittleEndian.Uint64(buf[16:24])),
+		LastLogTerm:  int(binary.LittleEndian.Uint64(buf[24:32])),
 	}
 }
 
-// Response sent by the peers
+// RequestVoteReply is sent by peers in response to a vote request.
 type RequestVoteReply struct {
-	Term        int  // This Term of candidate currently so it can update it
-	VoteGranted bool // Wheather or not the candidate was voted for True meaning it received the vote.
+	Term        int  // Current Term of candidate so it can update itself
+	VoteGranted bool // True means the candidate received the vote
 }
 
 func (reply *RequestVoteReply) Encode() []byte {
 	buf := make([]byte, 9) // 8 bytes for Term + 1 byte boolean flag
-	binary.BigEndian.PutUint64(buf[0:8], uint64(reply.Term))
+	binary.LittleEndian.PutUint64(buf[0:8], uint64(reply.Term))
 	if reply.VoteGranted {
 		buf[8] = 1
 	} else {
@@ -54,22 +54,22 @@ func DecodeRequestVoteReply(buf []byte) RequestVoteReply {
 		granted = true
 	}
 	return RequestVoteReply{
-		Term:        int(binary.BigEndian.Uint64(buf[0:8])),
+		Term:        int(binary.LittleEndian.Uint64(buf[0:8])),
 		VoteGranted: granted,
 	}
 }
 
-// AppendEntriesArgs  serves two purposes: transmitting log entries, and acting as Heartbeats.
+// AppendEntriesArgs serves log transmission and Heartbeats.
 type AppendEntriesArgs struct {
 	Term         int // Leader's term
-	LeaderID     int // So followers can redirect the clients
+	LeaderID     int // So followers can redirect clients
 	PrevLogTerm  int
 	PrevLogIndex int
 	Entries      [][]byte
 	LeaderCommit int
 }
 
-// AppendEntriesReply is retured by followers after processing relication.
+// AppendEntriesReply is returned by followers after processing replication.
 type AppendEntriesReply struct {
 	Term    int
 	Success bool
