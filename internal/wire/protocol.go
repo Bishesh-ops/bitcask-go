@@ -6,8 +6,12 @@ import (
 )
 
 const (
-	CmdPut uint8 = 1
-	CmdGet uint8 = 2
+	CmdPut                    uint8 = 1
+	CmdGet                    uint8 = 2
+	CmdRaftRequestVote        uint8 = 3
+	CmdRaftRequestVoteReply   uint8 = 4
+	CmdRaftAppendEntries      uint8 = 5
+	CmdRaftAppendEntriesReply uint8 = 6
 )
 
 type Frame struct {
