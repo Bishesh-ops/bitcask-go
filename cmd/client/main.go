@@ -11,88 +11,106 @@ import (
 )
 
 func main() {
-	// Connect to our running hybrid server/node on port 8080
 	conn, err := net.Dial("tcp", "localhost:8080")
 	if err != nil {
-		log.Fatalf("Failed to connect to cluster node: %v", err)
+		log.Fatalf("Failed to establish TCP stream to server: %v", err)
 	}
 	defer conn.Close()
 
 	fmt.Println("==================================================")
-	fmt.Println(" PHASE 1: Testing Direct Bitcask Storage Engine   ")
+	fmt.Println(" PHASE 1: Executing Direct Key-Value Storage I/O  ")
 	fmt.Println("==================================================")
 
-	// Send a standard database PUT command
-	fmt.Println("[Client] Sending PUT: 'educational' -> 'journey'")
-	err = wire.WriteFrame(conn, wire.CmdPut, []byte("educational"), []byte("journey"))
-	if err != nil {
-		log.Fatalf("Write PUT failed: %v", err)
-	}
+	fmt.Println("[DB Client] Issuing PUT command: 'consensus' -> 'stabilized'")
+	_ = wire.WriteFrame(conn, wire.CmdPut, []byte("consensus"), []byte("stabilized"))
+	resp, _ := wire.ReadFrame(conn)
+	fmt.Printf("[Server DB Reply] Status Engine: %s\n\n", string(resp.Key))
 
-	resp, err := wire.ReadFrame(conn)
-	if err != nil {
-		log.Fatalf("Read PUT response failed: %v", err)
-	}
-	fmt.Printf("[Server DB Reply] Status: %s\n\n", string(resp.Key))
+	fmt.Println("[DB Client] Issuing GET command: 'consensus'")
+	_ = wire.WriteFrame(conn, wire.CmdGet, []byte("consensus"), nil)
+	resp2, _ := wire.ReadFrame(conn)
+	fmt.Printf("[Server DB Reply] Payload Value: %s\n\n", string(resp2.Value))
 
-	// Send a standard database GET command
-	fmt.Println("[Client] Sending GET: 'educational'")
-	err = wire.WriteFrame(conn, wire.CmdGet, []byte("educational"), nil)
-	if err != nil {
-		log.Fatalf("Write GET failed: %v", err)
-	}
-
-	resp2, err := wire.ReadFrame(conn)
-	if err != nil {
-		log.Fatalf("Read GET response failed: %v", err)
-	}
-	fmt.Printf("[Server DB Reply] Value returned: %s\n\n", string(resp2.Value))
-
-	// Give the terminal output a tiny breathing buffer
-	time.Sleep(500 * time.Millisecond)
-
+	time.Sleep(300 * time.Millisecond)
 	fmt.Println("==================================================")
-	fmt.Println(" PHASE 2: Simulating Internal Raft Peer Traffic   ")
+	fmt.Println(" PHASE 2: Injecting Dominant Heartbeat Frame      ")
 	fmt.Println("==================================================")
 
-	// Let's pretend this client is Candidate Node ID 2 operating in Term 5.
-	// We are going to ask the server (Node ID 1) to grant us its vote.
-	voteReq := raft.RequestVoteArgs{
-		Term:         5,
-		CandidateID:  2,
-		LastLogIndex: 10,
-		LastLogTerm:  4,
+	targetTerm := 100
+	heartbeatArgs := raft.AppendEntriesArgs{
+		Term:         targetTerm,
+		LeaderID:     2,
+		PrevLogIndex: 0,
+		PrevLogTerm:  0,
+		Entries:      nil,
+		LeaderCommit: 0,
 	}
 
-	fmt.Printf("[Simulated Peer] Broadcasting RequestVote: CandidateID=%d, Term=%d\n", voteReq.CandidateID, voteReq.Term)
+	fmt.Printf("[Simulated Leader] Broadcasting initial AppendEntries: Term=%d\n", targetTerm)
+	_ = wire.WriteFrame(conn, wire.CmdRaftAppendEntries, nil, heartbeatArgs.Encode())
+	resp3, _ := wire.ReadFrame(conn)
 
-	// Explicitly pack our fields into raw Little Endian bytes using our domain logic
-	payload := voteReq.Encode()
+	var activeServerTerm int
 
-	// Push the consensus packet over the wire using our dedicated Raft opcode
-	err = wire.WriteFrame(conn, wire.CmdRaftRequestVote, nil, payload)
-	if err != nil {
-		log.Fatalf("Write RequestVote frame failed: %v", err)
-	}
+	if resp3.Cmd == wire.CmdRaftAppendEntriesReply {
+		reply := raft.DecodeAppendEntriesReply(resp3.Value)
+		activeServerTerm = reply.Term
+		fmt.Printf("[Server Reply] Current Node Term: %d | Acknowledged: %t\n", reply.Term, reply.Success)
 
-	// Read back the node's synchronized consensus state machine reply
-	resp3, err := wire.ReadFrame(conn)
-	if err != nil {
-		log.Fatalf("Read RequestVote reply failed: %v", err)
-	}
+		// If the standalone server outpaced our initial term guess, dynamically seize dominance!
+		if !reply.Success && reply.Term > targetTerm {
+			fmt.Printf("Server term is higher (%d). Dynamically adapting to assert dominance...\n", reply.Term)
 
-	// Verify the routing layer multiplexed the correct response opcode
-	if resp3.Cmd == wire.CmdRaftRequestVoteReply {
-		// Unpack the contiguous raw byte array back into our Go struct
-		reply := raft.DecodeRequestVoteReply(resp3.Value)
-		fmt.Printf("[Server Consensus Reply] Node Term: %d | Vote Granted: %t\n", reply.Term, reply.VoteGranted)
+			targetTerm = reply.Term + 1
+			heartbeatArgs.Term = targetTerm
+			activeServerTerm = targetTerm // Update tracking term for Phase 3 checks
 
-		if reply.VoteGranted {
-			fmt.Println("The server node evaluated our term logic and granted us its vote.")
-		} else {
-			fmt.Println("Status: Vote denied (Server term might be higher, or it already voted).")
+			fmt.Printf("[Simulated Leader] Re-broadcasting AppendEntries with overriding Term=%d\n", targetTerm)
+			_ = wire.WriteFrame(conn, wire.CmdRaftAppendEntries, nil, heartbeatArgs.Encode())
+
+			retryResp, _ := wire.ReadFrame(conn)
+			retryReply := raft.DecodeAppendEntriesReply(retryResp.Value)
+
+			fmt.Printf("[Server Overridden Reply] Node Term: %d | Acknowledged: %t\n", retryReply.Term, retryReply.Success)
+			if retryReply.Success {
+				fmt.Println("Dominance Successfully Asserted! Server accepted our dynamic term override and demoted to Follower.")
+			}
+		} else if reply.Success {
+			fmt.Println("Dominance Asserted on first try!")
 		}
-	} else {
-		fmt.Printf("[Error] Received unexpected opcode frame: %d\n", resp3.Cmd)
+	}
+
+	time.Sleep(300 * time.Millisecond)
+	fmt.Println()
+
+	fmt.Println("==================================================")
+	fmt.Println(" PHASE 3: Enforcing Consensus Safety Boundaries   ")
+	fmt.Println("==================================================")
+
+	staleTerm := activeServerTerm - 10
+	if staleTerm < 0 {
+		staleTerm = 0
+	}
+
+	staleVoteArgs := raft.RequestVoteArgs{
+		Term:         staleTerm,
+		CandidateID:  3,
+		LastLogIndex: 0,
+		LastLogTerm:  0,
+	}
+
+	fmt.Printf("[Delayed Candidate] Requesting Vote with stale Term=%d\n", staleVoteArgs.Term)
+	_ = wire.WriteFrame(conn, wire.CmdRaftRequestVote, nil, staleVoteArgs.Encode())
+	resp4, _ := wire.ReadFrame(conn)
+
+	if resp4.Cmd == wire.CmdRaftRequestVoteReply {
+		reply := raft.DecodeRequestVoteReply(resp4.Value)
+		fmt.Printf("[Server Consensus Reply] Node Current Term: %d | Vote Granted: %t\n", reply.Term, reply.VoteGranted)
+
+		if !reply.VoteGranted && reply.Term >= activeServerTerm {
+			fmt.Println("Consensus Secure! Server correctly rejected the stale candidate term to protect cluster state.")
+		} else {
+			fmt.Println("Boundary Validation failure.")
+		}
 	}
 }

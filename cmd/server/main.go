@@ -51,7 +51,7 @@ func handleConnection(conn net.Conn, db *engine.DB, node *raft.Node) {
 		}
 
 		switch frame.Cmd {
-		// --- Standard Bitcask Direct Engine Operations ---
+
 		case wire.CmdPut:
 			if err := db.Put(frame.Key, frame.Value); err != nil {
 				log.Printf("Engine level direct append error: %v", err)
@@ -66,12 +66,21 @@ func handleConnection(conn net.Conn, db *engine.DB, node *raft.Node) {
 				wire.WriteFrame(conn, wire.CmdGet, []byte("OK"), val)
 			}
 
-		// --- Raft Cluster Consensus Communication Multiplexer ---
 		case wire.CmdRaftRequestVote:
 			args := raft.DecodeRequestVoteArgs(frame.Value)
 			reply := node.HandleRequestVote(args)
 			respPayload := reply.Encode()
 			wire.WriteFrame(conn, wire.CmdRaftRequestVoteReply, nil, respPayload)
+
+		case wire.CmdRaftAppendEntries:
+
+			args := raft.DecodeAppendEntriesArgs(frame.Value)
+
+			reply := node.HandleAppendEntries(args)
+
+			respPayload := reply.Encode()
+
+			wire.WriteFrame(conn, wire.CmdRaftAppendEntriesReply, nil, respPayload)
 		}
 	}
 }

@@ -39,6 +39,8 @@ type Node struct {
 	// Timers and triggers
 	heartbeatTimer *time.Timer
 	electionTimer  *time.Timer
+
+	leaderID int // Tracks the current active leader (-1 if unknown)
 }
 
 func NewNode(id int, peers []string, db *engine.DB) *Node {
@@ -50,6 +52,7 @@ func NewNode(id int, peers []string, db *engine.DB) *Node {
 		currentTerm: 0,
 		db:          db,
 		transport:   NewTransport(),
+		leaderID:    -1,
 	}
 	n.resetElectionTimeout()
 	return n
@@ -59,6 +62,7 @@ func (n *Node) resetElectionTimeout() {
 	if n.electionTimer != nil {
 		n.electionTimer.Stop()
 	}
+	// Randomized timeout between 150ms and 300ms to prevent split votes
 	d := time.Duration(150+rand.Intn(150)) * time.Millisecond
 	n.electionTimer = time.AfterFunc(d, func() {
 		n.startElection()
@@ -78,19 +82,18 @@ func (n *Node) startElection() {
 	votesReceived := 1
 	var voteMu sync.Mutex
 
-	// Request votes from all peers concurrently using Goroutines
 	for _, peerAddr := range n.peers {
 		go func(peer string) {
 			args := RequestVoteArgs{
 				Term:         term,
 				CandidateID:  n.id,
 				LastLogIndex: len(n.log) - 1,
-				LastLogTerm:  0, // Simplified for step 1
+				LastLogTerm:  0,
 			}
 
 			reply := n.sendRequestVoteRPC(peer, args)
 			if reply == nil {
-				return // Network Drop
+				return
 			}
 
 			n.mu.Lock()
@@ -105,14 +108,17 @@ func (n *Node) startElection() {
 				n.state = Follower
 				n.currentTerm = reply.Term
 				n.votedFor = -1
+				n.leaderID = -1
 				return
 			}
 
 			if reply.VoteGranted {
 				voteMu.Lock()
 				votesReceived++
-				if votesReceived > (len(n.peers)+1)/2 { // Majority Quorum achieved!
+				// Majority Quorum achieved! ((N/2) + 1)
+				if votesReceived > (len(n.peers)+1)/2 {
 					n.state = Leader
+					n.leaderID = n.id
 					n.startHeartbeats()
 				}
 				voteMu.Unlock()
@@ -121,11 +127,71 @@ func (n *Node) startElection() {
 	}
 }
 
+// startHeartbeats asserts dominance by continuously broadcasting keep-alive frames.
 func (n *Node) startHeartbeats() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
 	if n.electionTimer != nil {
 		n.electionTimer.Stop()
 	}
-	// Broadcast logic stubbed
+
+	term := n.currentTerm
+	leaderID := n.id
+
+	go func(heartbeatTerm int, id int) {
+		ticker := time.NewTicker(50 * time.Millisecond)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			n.mu.Lock()
+
+			if n.state != Leader || n.currentTerm != heartbeatTerm {
+				n.mu.Unlock()
+				return
+			}
+
+			commitIdx := n.commitIndex
+			logLen := len(n.log)
+			n.mu.Unlock()
+
+			for _, peerAddr := range n.peers {
+				go func(peer string) {
+					args := AppendEntriesArgs{
+						Term:         heartbeatTerm,
+						LeaderID:     id,
+						PrevLogIndex: logLen - 1,
+						PrevLogTerm:  0,   // Simplified for heartbeat keep-alive phase
+						Entries:      nil, // Empty slice denotes pure Keep-Alive heartbeat
+						LeaderCommit: commitIdx,
+					}
+
+					client := n.transport.GetPeer(peer)
+					payload := args.Encode()
+
+					respFrame, err := client.ExecRPC(wire.CmdRaftAppendEntries, payload)
+					if err != nil || respFrame == nil {
+						return // Drop packet on network jitter
+					}
+
+					if respFrame.Cmd == wire.CmdRaftAppendEntriesReply {
+						reply := DecodeAppendEntriesReply(respFrame.Value)
+						n.mu.Lock()
+						defer n.mu.Unlock()
+
+						// Demote back to Follower if a peer reports a higher authoritative term
+						if reply.Term > n.currentTerm {
+							n.currentTerm = reply.Term
+							n.state = Follower
+							n.votedFor = -1
+							n.leaderID = -1
+							n.resetElectionTimeout()
+						}
+					}
+				}(peerAddr)
+			}
+		}
+	}(term, leaderID)
 }
 
 func (n *Node) sendRequestVoteRPC(peer string, args RequestVoteArgs) *RequestVoteReply {
@@ -161,6 +227,7 @@ func (n *Node) HandleRequestVote(args RequestVoteArgs) RequestVoteReply {
 		n.currentTerm = args.Term
 		n.state = Follower
 		n.votedFor = -1
+		n.leaderID = -1
 	}
 
 	if n.votedFor == -1 || n.votedFor == args.CandidateID {
@@ -169,5 +236,33 @@ func (n *Node) HandleRequestVote(args RequestVoteArgs) RequestVoteReply {
 		n.resetElectionTimeout() // Granting vote restarts idle timeout bounds
 	}
 
+	return reply
+}
+
+// HandleAppendEntries evaluates inbound leader traffic to guarantee state consistency.
+func (n *Node) HandleAppendEntries(args AppendEntriesArgs) AppendEntriesReply {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	reply := AppendEntriesReply{
+		Term:    n.currentTerm,
+		Success: false,
+	}
+
+	if args.Term < n.currentTerm {
+		return reply
+	}
+
+	if args.Term > n.currentTerm {
+		n.currentTerm = args.Term
+		n.votedFor = -1
+	}
+
+	n.state = Follower
+	n.leaderID = args.LeaderID
+
+	n.resetElectionTimeout()
+
+	reply.Success = true
 	return reply
 }
