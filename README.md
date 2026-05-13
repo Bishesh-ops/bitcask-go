@@ -38,11 +38,11 @@ An embedded implementation of the **Raft Consensus Algorithm** managing high-ava
    ```
 2. **Execute the Integration Client**
     In a separate terminal tab, run the comprehensive verification suite. The client will:
-       * Execute standard key-value mutations directly to the storage engine.
+      *    Execute standard key-value mutations directly to the storage engine.
 
-       * Dynamically detect background node terms to inject a dominant Leader keep-alive frame, forcing the server to suppress its timers and bow down as a clean Follower.
+      *    Dynamically detect background node terms to inject a dominant Leader keep-alive frame, forcing the server to suppress its timers and bow down as a clean Follower.
 
-       * Verify strict historical boundaries by testing the rejection of stale candidate packets.
+      *    Verify strict historical boundaries by testing the rejection of stale candidate packets.
 
     ```
         bash
