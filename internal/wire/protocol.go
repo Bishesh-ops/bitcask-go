@@ -6,12 +6,15 @@ import (
 )
 
 const (
-	CmdPut                    uint8 = 1
-	CmdGet                    uint8 = 2
-	CmdRaftRequestVote        uint8 = 3
-	CmdRaftRequestVoteReply   uint8 = 4
-	CmdRaftAppendEntries      uint8 = 5
-	CmdRaftAppendEntriesReply uint8 = 6
+	// Client Storage Engine Commands
+	CmdPut uint8 = 1
+	CmdGet uint8 = 2
+
+	// Raft Consensus Peer Multiplexer Commands
+	CmdRaftRequestVote        uint8 = 10
+	CmdRaftRequestVoteReply   uint8 = 11
+	CmdRaftAppendEntries      uint8 = 12
+	CmdRaftAppendEntriesReply uint8 = 13
 )
 
 type Frame struct {
@@ -21,14 +24,13 @@ type Frame struct {
 }
 
 func ReadFrame(r io.Reader) (*Frame, error) {
-	// We read the fixed 7 byte header first
+	// Read the fixed 7-byte header first to determine dynamic payload boundaries
 	header := make([]byte, 7)
 	if _, err := io.ReadFull(r, header); err != nil {
 		return nil, err
 	}
 
 	cmd := header[0]
-
 	keyLen := binary.BigEndian.Uint16(header[1:3])
 	valLen := binary.BigEndian.Uint32(header[3:7])
 
@@ -43,7 +45,7 @@ func ReadFrame(r io.Reader) (*Frame, error) {
 	}, nil
 }
 
-// WriteFrame packs  a command and sends it over the packet
+// WriteFrame packs a command opcode, key, and value payload safely over the socket stream
 func WriteFrame(w io.Writer, cmd uint8, key, value []byte) error {
 	keyLen := len(key)
 	valLen := len(value)
