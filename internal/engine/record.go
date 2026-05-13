@@ -1,6 +1,6 @@
 package engine
 
-import(
+import (
 	"encoding/binary"
 	"hash/crc32"
 	"time"
@@ -12,23 +12,23 @@ import(
 const HeaderSize = 20
 
 // Record represents the unpacked, in-memory format of our disk entry.
-type Record struct{
-	CRC uint32
+type Record struct {
+	CRC       uint32
 	Timestamp uint64
-	KeySize uint32
+	KeySize   uint32
 	ValueSize uint32
-	Key []byte
-	Value []byte
+	Key       []byte
+	Value     []byte
 }
 
 //Encode packs a key and value into a raw byte slice ready for disk I/O.
 
-func Encode(key, value []byte) [] byte{
+func Encode(key, value []byte) []byte {
 	keySz := uint32(len(key))
 	valSz := uint32(len(value))
 	timestamp := uint64(time.Now().UnixMicro())
 
-	// Allocate exact buffer size: Header + Key Payload + Value Payload 
+	// Allocate exact buffer size: Header + Key Payload + Value Payload
 	// This is like malloc in C
 	buf := make([]byte, HeaderSize+keySz+valSz)
 	// Pack the metadata fields with using explicit Endianness.
@@ -45,5 +45,3 @@ func Encode(key, value []byte) [] byte{
 
 	return buf
 }
-
-
